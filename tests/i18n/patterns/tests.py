@@ -29,7 +29,7 @@ class PermanentRedirectLocaleMiddleWare(LocaleMiddleware):
     ],
     MIDDLEWARE=[
         "django.middleware.locale.LocaleMiddleware",
-        "django.middleware.common.CommonMiddleware",
+        "django.middleware.common.common_middleware",
     ],
     ROOT_URLCONF="i18n.patterns.urls.default",
     TEMPLATES=[
@@ -313,7 +313,7 @@ class URLRedirectTests(URLTestCaseBase):
     @override_settings(
         MIDDLEWARE=[
             "i18n.patterns.tests.PermanentRedirectLocaleMiddleWare",
-            "django.middleware.common.CommonMiddleware",
+            "django.middleware.common.common_middleware",
         ],
     )
     def test_custom_redirect_class(self):
