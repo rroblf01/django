@@ -1935,7 +1935,7 @@ class TestLanguageInfo(SimpleTestCase):
     ],
     MIDDLEWARE=[
         "django.middleware.locale.LocaleMiddleware",
-        "django.middleware.common.CommonMiddleware",
+        "django.middleware.common.common_middleware",
     ],
     ROOT_URLCONF="i18n.urls",
 )
@@ -1957,7 +1957,7 @@ class LocaleMiddlewareTests(TestCase):
     ],
     MIDDLEWARE=[
         "django.middleware.locale.LocaleMiddleware",
-        "django.middleware.common.CommonMiddleware",
+        "django.middleware.common.common_middleware",
     ],
     ROOT_URLCONF="i18n.urls_default_unprefixed",
     LANGUAGE_CODE="en",
@@ -2015,7 +2015,7 @@ class UnprefixedDefaultLanguageTests(SimpleTestCase):
     ],
     MIDDLEWARE=[
         "django.middleware.locale.LocaleMiddleware",
-        "django.middleware.common.CommonMiddleware",
+        "django.middleware.common.common_middleware",
     ],
     ROOT_URLCONF="i18n.urls",
 )

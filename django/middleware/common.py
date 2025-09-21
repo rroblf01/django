@@ -1,16 +1,17 @@
 import re
 from urllib.parse import urlsplit
 
+from asgiref.sync import iscoroutinefunction, sync_to_async
+
 from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.core.mail import mail_managers
 from django.http import HttpResponsePermanentRedirect
 from django.urls import is_valid_path
-from django.utils.deprecation import MiddlewareMixin
 from django.utils.http import escape_leading_slashes
 
 
-class CommonMiddleware(MiddlewareMixin):
+class CommonMiddleware:
     """
     "Common" middleware for taking care of some basic operations:
 
@@ -30,13 +31,14 @@ class CommonMiddleware(MiddlewareMixin):
     """
 
     response_redirect_class = HttpResponsePermanentRedirect
+    sync_capable = True
+    async_capable = True
 
-    def process_request(self, request):
-        """
-        Check for denied User-Agents and rewrite the URL based on
-        settings.APPEND_SLASH and settings.PREPEND_WWW
-        """
+    def __init__(self, get_response):
+        self.get_response = get_response
+        self.is_async = iscoroutinefunction(get_response)
 
+    def __call__(self, request):
         # Check for denied User-Agents
         user_agent = request.META.get("HTTP_USER_AGENT")
         if user_agent is not None:
@@ -58,6 +60,50 @@ class CommonMiddleware(MiddlewareMixin):
                 path = request.get_full_path()
 
             return self.response_redirect_class(f"{request.scheme}://www.{host}{path}")
+
+        response = self.get_response(request)
+        return self._process_response(request, response)
+
+    async def __acall__(self, request):
+        # Check for denied User-Agents
+        user_agent = request.META.get("HTTP_USER_AGENT")
+        if user_agent is not None:
+            for user_agent_regex in settings.DISALLOWED_USER_AGENTS:
+                if user_agent_regex.search(user_agent):
+                    raise PermissionDenied("Forbidden user agent")
+
+        # Check for a redirect based on settings.PREPEND_WWW
+        host = request.get_host()
+
+        if settings.PREPEND_WWW and host and not host.startswith("www."):
+            # Check if we also need to append a slash so we can do it all
+            # with a single redirect. (This check may be somewhat expensive,
+            # so we only do it if we already know we're sending a redirect,
+            # or in process_response if we get a 404.)
+            if self.should_redirect_with_slash(request):
+                path = self.get_full_path_with_slash(request)
+            else:
+                path = request.get_full_path()
+
+            return self.response_redirect_class(f"{request.scheme}://www.{host}{path}")
+
+        response = await self.get_response(request)
+        return self._process_response(request, response)
+
+    def _process_response(self, request, response):
+        # If the given URL is "Not Found", then check if we should redirect to
+        # a path with a slash appended.
+        if response.status_code == 404 and self.should_redirect_with_slash(request):
+            response = self.response_redirect_class(
+                self.get_full_path_with_slash(request)
+            )
+
+        # Add the Content-Length header to non-streaming responses if not
+        # already set.
+        if not response.streaming and not response.has_header("Content-Length"):
+            response.headers["Content-Length"] = str(len(response.content))
+
+        return response
 
     def should_redirect_with_slash(self, request):
         """
@@ -97,28 +143,26 @@ class CommonMiddleware(MiddlewareMixin):
             )
         return new_path
 
-    def process_response(self, request, response):
-        """
-        When the status code of the response is 404, it may redirect to a path
-        with an appended slash if should_redirect_with_slash() returns True.
-        """
-        # If the given URL is "Not Found", then check if we should redirect to
-        # a path with a slash appended.
-        if response.status_code == 404 and self.should_redirect_with_slash(request):
-            response = self.response_redirect_class(
-                self.get_full_path_with_slash(request)
-            )
 
-        # Add the Content-Length header to non-streaming responses if not
-        # already set.
-        if not response.streaming and not response.has_header("Content-Length"):
-            response.headers["Content-Length"] = str(len(response.content))
+class BrokenLinkEmailsMiddleware:
+    sync_capable = True
+    async_capable = True
 
+    def __init__(self, get_response):
+        self.get_response = get_response
+        self.is_async = iscoroutinefunction(get_response)
+
+    def __call__(self, request):
+        response = self.get_response(request)
+        self._process_response(request, response)
         return response
 
+    async def __acall__(self, request):
+        response = await self.get_response(request)
+        await self._aprocess_response(request, response)
+        return response
 
-class BrokenLinkEmailsMiddleware(MiddlewareMixin):
-    def process_response(self, request, response):
+    def _process_response(self, request, response):
         """Send broken link emails for relevant 404 NOT FOUND responses."""
         if response.status_code == 404 and not settings.DEBUG:
             domain = request.get_host()
@@ -142,7 +186,31 @@ class BrokenLinkEmailsMiddleware(MiddlewareMixin):
                     "IP address: %s\n" % (referer, path, ua, ip),
                     fail_silently=True,
                 )
-        return response
+
+    async def _aprocess_response(self, request, response):
+        """Send broken link emails for relevant 404 NOT FOUND responses."""
+        if response.status_code == 404 and not settings.DEBUG:
+            domain = request.get_host()
+            path = request.get_full_path()
+            referer = request.META.get("HTTP_REFERER", "")
+
+            if not self.is_ignorable_request(request, path, domain, referer):
+                ua = request.META.get("HTTP_USER_AGENT", "<none>")
+                ip = request.META.get("REMOTE_ADDR", "<none>")
+                await sync_to_async(mail_managers)(
+                    "Broken %slink on %s"
+                    % (
+                        (
+                            "INTERNAL "
+                            if self.is_internal_request(domain, referer)
+                            else ""
+                        ),
+                        domain,
+                    ),
+                    "Referrer: %s\nRequested URL: %s\nUser agent: %s\n"
+                    "IP address: %s\n" % (referer, path, ua, ip),
+                    fail_silently=True,
+                )
 
     def is_internal_request(self, domain, referer):
         """
